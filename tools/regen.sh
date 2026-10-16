@@ -32,19 +32,31 @@ if [ ! -f "$EXE" ]; then
         "$EXE" "$ROOT/SLUS_011.15.text.bin"
 fi
 
-# Build the recompiler tool once.
-if [ ! -x "$FRAMEWORK/recompiler/build/psxrecomp-game" ]; then
-    echo "==> building the recompiler"
+# Build the recompiler, or bring it up to date. Always run the build, not only
+# when the binary is missing: it is incremental (a no-op when nothing changed),
+# and skipping it after a submodule bump leaves the OLD recompiler emitting the
+# game C and the BIOS for the NEW runtime -- a mismatch that does not fail to
+# build, it just hangs at run time.
+if [ ! -f "$FRAMEWORK/recompiler/build/CMakeCache.txt" ]; then
+    echo "==> configuring the recompiler"
     cmake -S "$FRAMEWORK/recompiler" -B "$FRAMEWORK/recompiler/build" \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
-    cmake --build "$FRAMEWORK/recompiler/build"
 fi
+echo "==> building the recompiler (incremental)"
+cmake --build "$FRAMEWORK/recompiler/build"
 
 # The runtime links a recompiled BIOS backend; OpenBIOS is bundled and
 # MIT-licensed, so this needs no BIOS dump. Its C is build output, not tracked.
-if [ ! -f "$FRAMEWORK/generated/OpenBIOS_full.c" ]; then
-    echo "==> generating the OpenBIOS backend"
+# Regenerate it whenever the recompiler's emitter changed since it was made
+# (the hash psxrecomp-game bakes in and prints via --codegen-hash), not only
+# when it is missing -- the same staleness rule as the game C above.
+BIOS_C="$FRAMEWORK/generated/OpenBIOS_full.c"
+BIOS_STAMP="$FRAMEWORK/generated/OpenBIOS_full.codegen-hash"
+CODEGEN=$("$FRAMEWORK/recompiler/build/psxrecomp-game" --codegen-hash | head -1)
+if [ ! -f "$BIOS_C" ] || [ "$(cat "$BIOS_STAMP" 2>/dev/null)" != "$CODEGEN" ]; then
+    echo "==> generating the OpenBIOS backend (codegen $CODEGEN)"
     ( cd "$FRAMEWORK" && sh tools/regen_bios.sh --config bios/OpenBIOS.toml )
+    printf '%s\n' "$CODEGEN" > "$BIOS_STAMP"
 fi
 
 echo "==> recompiling SLUS_011.15"
