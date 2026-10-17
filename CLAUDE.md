@@ -270,9 +270,15 @@ itself with plain file I/O.
   Writing it to 8 opens the load screen.
 - The earlier plan to request a save with flag 72 plus the latch `0x80128B5C` does
   **not** work in modes 14/15/19: nothing consumes the latch there.
-- Loading a diary always starts in the farmhouse; a save made outdoors does not
-  restore the position. A save made while an event was running reloaded into that
-  event's dialogue. Nothing in the mod checks for a dialogue or cutscene.
+- What a mid-day save keeps (measured: saved outdoors at 6:40 holding a weed,
+  reloaded): the **time of day (6:40) and the held item are kept**; the **position
+  is not** — the game always reloads inside the farmhouse. A save made while an
+  event was running reloaded into that event's dialogue. Nothing in the mod
+  checks for a dialogue or cutscene. Not tested: a save made late in the day.
+- Select is also the game's MAP button, so the Select + L1 + R1 combo opens the
+  map when the game returns from the save screen. Consider a combo without Select.
+- The game's own clock does not advance in the farmhouse; it ran outdoors
+  (6:00 -> 6:40 in about two minutes of walking).
 - Mode 14 can be a stable gameplay state and also covers the "Now Loading" screen.
 - `build/mods/hmbtn/` is not created by the build; create it, or copy the folder
   next to the executable when packaging.
