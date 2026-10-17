@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# Refuse a commit that would add game data. Enable with:
+#     git config core.hooksPath .githooks
+#
+# Fails CLOSED: if no working Python is found the commit is refused, because an
+# unchecked commit is exactly how game data would get in. On Windows the first
+# python3/python on PATH can be the Microsoft Store stub, so each candidate is
+# run before it is trusted.
+ROOT=$(git rev-parse --show-toplevel)
+for c in python3 python py; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys" >/dev/null 2>&1; then
+        exec "$c" "$ROOT/tools/check_no_game_data.py" --staged
+    fi
+done
+echo "pre-commit: no working Python found, so the commit cannot be checked for game data." >&2
+echo "            Install Python 3 (and put it on PATH), then commit again." >&2
+exit 1

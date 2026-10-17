@@ -207,6 +207,28 @@ sh tools/save_cache.sh
 `cache/` (root) is durable; `build/cache` is what the runtime reads.
 `build.sh` copies in, `save_cache.sh` copies out.
 
+### No game data in this repository
+
+This repo ships **code and addresses only**. It must never contain the disc image,
+`SLUS_011.15`, anything extracted from `A_FILE.BIN`, a retail BIOS, a memory card
+or save, code generated from the game's executable (`generated/`, `cache/`,
+`build/`, `overlay_static.json`), or a dump of its RAM (`psx_freeze_*.json`,
+`overlay_captures*`). The user supplies the disc; everything above is gitignored.
+
+- `tools/check_no_game_data.py` fails on: disc/ROM/save/executable extensions,
+  game or BIOS file names, files in generated/derived directories, anything over
+  1 MiB, binary content, and long hex or base64 runs. Run it on every tracked file
+  (`python3 tools/check_no_game_data.py`) or on what is staged (`--staged`).
+- Turn on the commit gate once per clone: `git config core.hooksPath .githooks`.
+  The hook fails closed: with no working Python the commit is refused.
+- Audited 2026-10-17 (all refs, whole history of this repo): 35 tracked files, all
+  text or scripts, largest 42 KB; no blob over 300 KB ever; `seeds/` hold function
+  addresses only. The `psxrecomp/` submodule is upstream's and is a separate
+  repository: it bundles `bios/openbios.bin`, the PCSX-Redux **OpenBIOS** (MIT,
+  documented in `bios/OpenBIOS.LICENSE`; not a Sony dump), and tool executables
+  (tcc, a Python runtime), none of them game data. Its memory card fixtures contain
+  no game ids. Do not add a retail BIOS (`SCPH*.BIN`) there or here.
+
 ### Drop-in mods (`mods/hmbtn/<name>/mod.toml`)
 
 A mod is a folder under `<exe dir>/mods/hmbtn/` holding one `mod.toml`. Put it
