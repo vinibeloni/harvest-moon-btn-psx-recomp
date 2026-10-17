@@ -17,6 +17,8 @@
  *     [[trigger]]                       # a button combination, once per press
  *     modes   = [2, 15, 19]             # fire only while the game's mode word is one of these
  *     buttons = 0x010C                  # all of these pad bits held (Select|L1|R1)
+ *     forbid  = 0x0008                  # optional: none of these may be held (so
+ *                                       # Select+L1 and Select+L1+R1 stay distinct)
  *     note    = "why"
  *
  *     [[require]]                       # belongs to the [[trigger]] above it;
@@ -107,6 +109,7 @@ typedef struct HmbtnRequire {
 typedef struct HmbtnTrigger {
     uint32_t mode_mask;     /* bit n set = the trigger may fire in game mode n */
     uint32_t buttons;
+    uint32_t forbid;        /* pad bits that must NOT be held (0 = no restriction) */
     uint32_t first_write;
     uint32_t write_count;
     uint32_t first_require;
@@ -346,6 +349,7 @@ static int parse_mod(char *text)
         case SEC_TRIGGER:
             if      (!strcmp(key, "modes"))   { ok = parse_mode_mask(val, &ps.trig.mode_mask); ps.trig_have |= 1u; }
             else if (!strcmp(key, "buttons")) { ok = parse_u32(val, &ps.trig.buttons); ps.trig_have |= 2u; }
+            else if (!strcmp(key, "forbid"))  { ok = parse_u32(val, &ps.trig.forbid) && ps.trig.forbid <= 0xFFFFu; }
             else if (!strcmp(key, "note"))    { ok = is_quoted(val); }
             else ok = 0;
             break;
@@ -498,7 +502,8 @@ static void on_vblank(void)
     const uint32_t mode = psx_mod_read_word(HMBTN_MODE_ADDR);
     for (uint32_t i = 0; i < g_trigger_count; i++) {
         HmbtnTrigger *t = &g_triggers[i];
-        const int down = (held & t->buttons) == t->buttons;
+        const int down = (held & t->buttons) == t->buttons &&
+                         (held & t->forbid) == 0;
         if (down && t->armed) {
             /* One decision per press: a press refused by the mode or a
              * condition is spent, so holding it until the condition clears

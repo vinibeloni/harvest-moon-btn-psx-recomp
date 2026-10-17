@@ -239,8 +239,11 @@ value   = 7
 ```
 
 Shipped mods live in `hmbtn-mods/<name>/` (copy one into `mods/hmbtn/` next to the
-executable). `save-anywhere` is the first: hold Select + L1 + R1 in the field and
-it writes what `SetMode(7)` writes, opening the diary save screen mid-day.
+executable). `save-anywhere` is the first: in the field, Select + L1 writes what
+`SetMode(7)` writes (diary save screen mid-day) and Select + R1 writes `SetMode(8)`
+(load screen). A trigger may `forbid = <pad bits>` that must NOT be held, so the
+two combos stay distinct when all three buttons are down. Aborting the save screen
+with ○ asks "Abort save?"; "Yes" returns to the field in mode 15 without writing.
 
 The engine is `src/mods/hmbtn_patchengine.c`, activated by the package
 `mods/preloaded/packages/hmbtn.patchengine` (wired in `CMakeLists.txt` through

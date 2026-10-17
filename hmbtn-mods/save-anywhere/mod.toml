@@ -1,30 +1,36 @@
 name = "Save anywhere"
-version = "0.3.0"
-description = "Hold Select + L1 + R1 in the field to open the diary save screen without going to bed."
+version = "0.4.0"
+description = "In the field: Select + L1 opens the diary save screen, Select + R1 opens the diary load screen. No need to go to bed."
 
-# Does what SaveGate (0x800DE4C0) does at its end, SetMode(7), by writing the
-# three words SetMode writes: the mode word at 0x8005E39C and the word after it
-# at 0x8005E3A0 (SetMode clears it). Verified in the running game: with the mode
-# word at 7 the memory card screen opens mid-day and a save completes, after
-# which the game returns to its field mode (15).
+# Both do what the game does itself, by writing the words SetMode writes: the
+# mode word at 0x8005E39C and the word after it at 0x8005E3A0 (SetMode clears
+# it). Mode 7 is the memory card save screen, mode 8 the load screen. Verified in
+# the running game.
 #
-# Select 0x100 | L1 0x004 | R1 0x008 in the game's own pad word.
-# Modes are the ones that run the field overlay (member 11): 2, 6, 14, 15, 19,
-# 20. Which one the game is in depends on how it got there, not on where the
-# player stands: 19 after loading a diary one way, 14 another, 15 after the card
-# screen. All three were seen with the player free in the farmhouse. Mode 14 also
-# covers the "Now Loading" screen, so do not press it while the game is loading:
-# nothing here checks for that.
+# Pad bits in the game's own word: Select 0x100, L1 0x004, R1 0x008. `forbid`
+# keeps the two combos distinct when all three are held.
+#
+# Modes are the ones that run the field overlay: 2, 6, 14, 15, 19, 20. Which one
+# the game is in depends on how it got there, not on where the player stands.
+# Mode 14 also covers the "Now Loading" screen and is not guarded, so do not press
+# either combo while the game is loading.
+#
+# Both are refused during a dialogue or a cutscene and while the Start menu is
+# open (see CLAUDE.md for how the two words were found and checked):
+#   0x80127208 is 0 for every moment of an event, 1 whenever the player is free
+#   0x800A072C is 0x18 while the player is free, 0 while the Start menu is open
+#
+# LOAD REPLACES THE CURRENT GAME with the diary you pick; anything since your
+# last save is lost. Pick "back" out of the screen to keep playing, if the game
+# offers it.
+
+# ---- Save: Select + L1 ----
 [[trigger]]
 modes   = [2, 6, 14, 15, 19, 20]
-buttons = 0x010C
-note    = "Select + L1 + R1"
+buttons = 0x0104
+forbid  = 0x0008
+note    = "Select + L1: save"
 
-# Refuse the press during a dialogue or a cutscene, and while the Start menu is
-# open. Found by comparing RAM snapshots, then each word was read across a full
-# event and a menu open/close cycle in the running game (see CLAUDE.md):
-#   0x80127208 is 0 for every moment of the outdoor event, 1 whenever the player is free
-#   0x800A072C is 0x18 while the player is free, 0 while the Start menu is open
 [[require]]
 address = 0x80127208
 equals  = 1
@@ -39,10 +45,37 @@ note    = "Start menu is not open"
 address = 0x8005E3A0
 op      = "set"
 value   = 0
-note    = "SetMode clears the word after the mode"
 
 [[write]]
 address = 0x8005E39C
 op      = "set"
 value   = 7
-note    = "SetMode(7): memory card screen"
+note    = "SetMode(7): memory card save screen"
+
+# ---- Load: Select + R1 ----
+[[trigger]]
+modes   = [2, 6, 14, 15, 19, 20]
+buttons = 0x0108
+forbid  = 0x0004
+note    = "Select + R1: load"
+
+[[require]]
+address = 0x80127208
+equals  = 1
+note    = "no dialogue or event running"
+
+[[require]]
+address = 0x800A072C
+equals  = 0x18
+note    = "Start menu is not open"
+
+[[write]]
+address = 0x8005E3A0
+op      = "set"
+value   = 0
+
+[[write]]
+address = 0x8005E39C
+op      = "set"
+value   = 8
+note    = "SetMode(8): memory card load screen"
