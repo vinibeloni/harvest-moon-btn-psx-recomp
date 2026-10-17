@@ -1,0 +1,33 @@
+name = "Save anywhere"
+version = "0.2.0"
+description = "Hold Select + L1 + R1 in the field to open the diary save screen without going to bed."
+
+# Does what SaveGate (0x800DE4C0) does at its end, SetMode(7), by writing the
+# three words SetMode writes: the mode word at 0x8005E39C and the word after it
+# at 0x8005E3A0 (SetMode clears it). Verified in the running game: with the mode
+# word at 7 the memory card screen opens mid-day and a save completes, after
+# which the game returns to its field mode (15).
+#
+# Select 0x100 | L1 0x004 | R1 0x008 in the game's own pad word.
+# Modes are the ones that run the field overlay (member 11): 2, 6, 14, 15, 19,
+# 20. Which one the game is in depends on how it got there, not on where the
+# player stands: 19 after loading a diary one way, 14 another, 15 after the card
+# screen. All three were seen with the player free in the farmhouse. Mode 14 also
+# covers the "Now Loading" screen, so do not press it while the game is loading,
+# nor during a dialogue or a cutscene: nothing here checks for either.
+[[trigger]]
+modes   = [2, 6, 14, 15, 19, 20]
+buttons = 0x010C
+note    = "Select + L1 + R1"
+
+[[write]]
+address = 0x8005E3A0
+op      = "set"
+value   = 0
+note    = "SetMode clears the word after the mode"
+
+[[write]]
+address = 0x8005E39C
+op      = "set"
+value   = 7
+note    = "SetMode(7): memory card screen"

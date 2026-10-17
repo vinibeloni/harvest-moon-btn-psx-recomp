@@ -222,7 +222,20 @@ address  = 0x800FFD2C             # KSEG0 RAM 0x80010000..0x801FFFFF, word align
 expected = 0x24020001             # stock word; the patch applies only while RAM holds it
 replace  = 0x24020002
 note     = "why"
+
+[[trigger]]                       # a button combination, once per press
+modes   = [2, 15, 19]             # only while the game's mode word (0x8005E39C) is one of these
+buttons = 0x010C                  # all of these bits of the game's pad word held (Select|L1|R1)
+
+[[write]]                         # belongs to the [[trigger]] above it
+address = 0x8005E39C              # KSEG0 RAM 0x80000000..0x801FFFFF, word aligned
+op      = "set"                   # "set" or "or"
+value   = 7
 ```
+
+Shipped mods live in `hmbtn-mods/<name>/` (copy one into `mods/hmbtn/` next to the
+executable). `save-anywhere` is the first: hold Select + L1 + R1 in the field and
+it writes what `SetMode(7)` writes, opening the diary save screen mid-day.
 
 The engine is `src/mods/hmbtn_patchengine.c`, activated by the package
 `mods/preloaded/packages/hmbtn.patchengine` (wired in `CMakeLists.txt` through
@@ -238,10 +251,29 @@ itself with plain file I/O.
 - Observe it with `debug_client.py mod_counters`: `hmbtn.patchengine.mods_loaded`,
   `.mods_rejected`, `.applied`. Nothing is logged.
 - Verified (Windows build): a valid mod loaded, a mod with an unaligned address
-  was rejected, and the patched word read back in RAM. **Not yet verified:**
-  patches inside overlay windows (`0x800B7E20`, `0x8012DDE8`) with the native
+  was rejected, a `[[patch]]` read back in RAM, and the `save-anywhere` trigger
+  fires once per press and opens the memory card screen. **Not yet verified:**
+  `[[patch]]` inside overlay windows (`0x800B7E20`, `0x8012DDE8`) with the native
   shards, and any change in frame rate from `psx_mod_write_code_word` on overlay
   pages.
+- Measured in the running game (do not re-derive): the pad struct is at the
+  pointer in `0x8005E3A8`; word `+0` is an auto-repeat pulse, **`+4` is the held
+  buttons** (active high: Select `0x100`, Start `0x800`, L1 `0x4`, R1 `0x8`,
+  Up `0x1000`, Cross `0x40`), `+8` the newly-pressed edge. The debug server's
+  `press` / `set_input` take the raw SIO word, active LOW (`0xFFFF` = idle,
+  Select bit 0, Start bit 3, L1 bit 10, R1 bit 11, Cross bit 14).
+- The mode word is **not** "where the player is": it says which entry brought the
+  game to the field overlay. All of 14 (`0x0E`), 15 (`0x0F`) and 19 (`0x13`) were
+  seen with the player free in the farmhouse, and 15 also outdoors. Writing the
+  mode word to 7 (and `0x8005E3A0` to 0, as `SetMode` does) opens the card save
+  screen from any of them, a save completes, and the game returns in mode 15.
+  Writing it to 8 opens the load screen.
+- The earlier plan to request a save with flag 72 plus the latch `0x80128B5C` does
+  **not** work in modes 14/15/19: nothing consumes the latch there.
+- Loading a diary always starts in the farmhouse; a save made outdoors does not
+  restore the position. A save made while an event was running reloaded into that
+  event's dialogue. Nothing in the mod checks for a dialogue or cutscene.
+- Mode 14 can be a stable gameplay state and also covers the "Now Loading" screen.
 - `build/mods/hmbtn/` is not created by the build; create it, or copy the folder
   next to the executable when packaging.
 

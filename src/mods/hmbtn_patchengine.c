@@ -4,21 +4,34 @@
  * Put the folder there and the mod is active; remove it and it is gone. No
  * rebuild, no regen, no overlay recompile.
  *
- * mod.toml is a small TOML subset:
+ * mod.toml is a small TOML subset with three kinds of table:
  *
  *     name = "Example"                  # name / version / author / description
  *
- *     [[patch]]
- *     address  = 0x800FFD2C             # KSEG0, word aligned
- *     expected = 0x24020001             # the stock instruction word
+ *     [[patch]]                         # guarded replacement of one code word
+ *     address  = 0x800FFD2C             # KSEG0 RAM, word aligned
+ *     expected = 0x24020001             # the stock word
  *     replace  = 0x24020002
  *     note     = "why"
+ *
+ *     [[trigger]]                       # a button combination, once per press
+ *     modes   = [2, 15, 19]             # fire only while the game's mode word is one of these
+ *     buttons = 0x010C                  # all of these pad bits held (Select|L1|R1)
+ *     note    = "why"
+ *
+ *     [[write]]                         # belongs to the [[trigger]] above it
+ *     address = 0x8006C878
+ *     op      = "or"                    # "set" or "or"
+ *     value   = 0x100
  *
  * Every patch is guarded: the word is replaced only while RAM still holds
  * `expected`, so a mod written for other bytes does nothing instead of
  * corrupting the guest. Gameplay code lives in overlays that the game loads
  * after boot and swaps in and out, so the guard is re-checked every VBlank and
  * the patch is re-applied whenever its overlay becomes resident again.
+ *
+ * A trigger fires on the VBlank where its combination becomes held and re-arms
+ * when it is released. A trigger held at launch does not fire until released.
  *
  * A mod that fails to parse is rejected whole. Nothing is logged to a file or
  * to stderr; observe the engine through the mod_counters debug command
@@ -44,13 +57,25 @@
 
 #define HMBTN_ENGINE_ID    "hmbtn.patchengine"
 #define HMBTN_MAX_PATCHES  8192u
+#define HMBTN_MAX_TRIGGERS 64u
+#define HMBTN_MAX_WRITES   512u
 #define HMBTN_MAX_FILE     (1u << 20)
 #define HMBTN_PATH_CAP     1024u
 
 /* The main EXE and the overlay windows all sit inside KSEG0 RAM above the
- * kernel area; nothing a mod needs lies outside it. */
-#define HMBTN_ADDR_LO      0x80010000u
+ * kernel area. Triggers write data (flags, latches) that can live lower, so
+ * their range starts at the bottom of RAM. */
+#define HMBTN_PATCH_LO     0x80010000u
+#define HMBTN_WRITE_LO     0x80000000u
 #define HMBTN_ADDR_HI      0x80200000u
+
+/* The game's mode word, and the pointer to its pad struct. Measured in the
+ * running game by holding buttons: word +0 is an auto-repeat pulse (zero for a
+ * held direction on most frames), word +4 is the held buttons (active high,
+ * stable), word +8 is the newly-pressed edge. Held is therefore +4. */
+#define HMBTN_MODE_ADDR     0x8005E39Cu
+#define HMBTN_PAD_PTR_ADDR  0x8005E3A8u
+#define HMBTN_PAD_HELD_OFFS 4u
 
 typedef struct HmbtnPatch {
     uint32_t address;
@@ -58,8 +83,28 @@ typedef struct HmbtnPatch {
     uint32_t replace;
 } HmbtnPatch;
 
-static HmbtnPatch g_patches[HMBTN_MAX_PATCHES];
-static uint32_t   g_patch_count;
+enum { HMBTN_OP_SET = 0, HMBTN_OP_OR = 1 };
+
+typedef struct HmbtnWrite {
+    uint32_t address;
+    uint32_t value;
+    uint32_t op;
+} HmbtnWrite;
+
+typedef struct HmbtnTrigger {
+    uint32_t mode_mask;     /* bit n set = the trigger may fire in game mode n */
+    uint32_t buttons;
+    uint32_t first_write;
+    uint32_t write_count;
+    int      armed;
+} HmbtnTrigger;
+
+static HmbtnPatch   g_patches[HMBTN_MAX_PATCHES];
+static uint32_t     g_patch_count;
+static HmbtnTrigger g_triggers[HMBTN_MAX_TRIGGERS];
+static uint32_t     g_trigger_count;
+static HmbtnWrite   g_writes[HMBTN_MAX_WRITES];
+static uint32_t     g_write_count;
 
 static int exe_dir(char *out, size_t cap)
 {
@@ -114,8 +159,7 @@ static void strip_comment(char *line)
     }
 }
 
-/* A value is either a quoted string (accepted, contents unused) or an
- * unsigned integer in any strtoul base (0x... or decimal). */
+/* Unsigned integer in any strtoull base (0x... or decimal), no quotes. */
 static int parse_u32(const char *v, uint32_t *out)
 {
     if (!*v || *v == '"') return 0;
@@ -132,23 +176,98 @@ static int is_quoted(const char *v)
     return n >= 2 && v[0] == '"' && v[n - 1] == '"';
 }
 
+/* "[2, 0x0F, 19]" -> bitmask of those mode numbers (each 0..31, at least one). */
+static int parse_mode_mask(char *v, uint32_t *out)
+{
+    size_t n = strlen(v);
+    if (n < 3 || v[0] != '[' || v[n - 1] != ']') return 0;
+    v[n - 1] = 0;
+    uint32_t mask = 0;
+    for (char *tok = v + 1; tok; ) {
+        char *comma = strchr(tok, ',');
+        if (comma) *comma = 0;
+        uint32_t m;
+        if (!parse_u32(trim(tok), &m) || m > 31u) return 0;
+        mask |= 1u << m;
+        tok = comma ? comma + 1 : NULL;
+    }
+    *out = mask;
+    return mask != 0;
+}
+
+/* "text" -> text, in place. Returns NULL unless v is a quoted string. */
+static char *unquote(char *v)
+{
+    if (!is_quoted(v)) return NULL;
+    v[strlen(v) - 1] = 0;
+    return v + 1;
+}
+
 static int patch_valid(const HmbtnPatch *p)
 {
     return (p->address & 3u) == 0 &&
-           p->address >= HMBTN_ADDR_LO && p->address < HMBTN_ADDR_HI &&
+           p->address >= HMBTN_PATCH_LO && p->address < HMBTN_ADDR_HI &&
            p->expected != p->replace;
 }
 
-/* Parse one mod.toml. Returns 1 and keeps its patches, or 0 and keeps none. */
+static int write_valid(const HmbtnWrite *w)
+{
+    return (w->address & 3u) == 0 &&
+           w->address >= HMBTN_WRITE_LO && w->address < HMBTN_ADDR_HI;
+}
+
+enum { SEC_TOP = 0, SEC_PATCH, SEC_TRIGGER, SEC_WRITE };
+
+typedef struct ParseState {
+    int          section;
+    HmbtnPatch   patch;
+    unsigned     patch_have;      /* bit 0 address, 1 expected, 2 replace */
+    HmbtnTrigger trig;
+    unsigned     trig_have;       /* bit 0 mode, 1 buttons */
+    HmbtnWrite   wr;
+    unsigned     wr_have;         /* bit 0 address, 1 op, 2 value */
+    int          have_trigger;    /* a [[trigger]] is open for [[write]] */
+} ParseState;
+
+/* Close whichever table is open, committing it to the global arrays. */
+static int flush_section(ParseState *ps)
+{
+    switch (ps->section) {
+    case SEC_PATCH:
+        if (ps->patch_have != 7u || !patch_valid(&ps->patch) ||
+            g_patch_count >= HMBTN_MAX_PATCHES) return 0;
+        g_patches[g_patch_count++] = ps->patch;
+        break;
+    case SEC_TRIGGER:
+        if (ps->trig_have != 3u || ps->trig.mode_mask == 0 ||
+            ps->trig.buttons == 0 || ps->trig.buttons > 0xFFFFu ||
+            g_trigger_count >= HMBTN_MAX_TRIGGERS) return 0;
+        ps->trig.first_write = g_write_count;
+        ps->trig.write_count = 0;
+        ps->trig.armed = 0;
+        g_triggers[g_trigger_count++] = ps->trig;
+        ps->have_trigger = 1;
+        break;
+    case SEC_WRITE:
+        if (!ps->have_trigger || ps->wr_have != 7u || !write_valid(&ps->wr) ||
+            g_write_count >= HMBTN_MAX_WRITES) return 0;
+        g_writes[g_write_count++] = ps->wr;
+        g_triggers[g_trigger_count - 1].write_count++;
+        break;
+    default:
+        break;
+    }
+    return 1;
+}
+
+/* Parse one mod.toml. Returns 1 and keeps its entries, or 0 and keeps none. */
 static int parse_mod(char *text)
 {
-    const uint32_t start = g_patch_count;
-    HmbtnPatch cur;
-    unsigned have = 0;       /* bit 0 address, 1 expected, 2 replace */
-    int in_patch = 0;
+    const uint32_t p0 = g_patch_count, t0 = g_trigger_count, w0 = g_write_count;
+    ParseState ps;
     int ok = 1;
 
-    memset(&cur, 0, sizeof cur);
+    memset(&ps, 0, sizeof ps);
 
     char *line = text;
     while (ok && line) {
@@ -159,15 +278,19 @@ static int parse_mod(char *text)
         line = next;
         if (!*s) continue;
 
-        if (strcmp(s, "[[patch]]") == 0) {
-            if (in_patch) {
-                if (have != 7u || !patch_valid(&cur) ||
-                    g_patch_count >= HMBTN_MAX_PATCHES) { ok = 0; break; }
-                g_patches[g_patch_count++] = cur;
-            }
-            memset(&cur, 0, sizeof cur);
-            have = 0;
-            in_patch = 1;
+        if (s[0] == '[') {
+            int sec;
+            if      (strcmp(s, "[[patch]]")   == 0) sec = SEC_PATCH;
+            else if (strcmp(s, "[[trigger]]") == 0) sec = SEC_TRIGGER;
+            else if (strcmp(s, "[[write]]")   == 0) sec = SEC_WRITE;
+            else { ok = 0; break; }
+            if (!flush_section(&ps)) { ok = 0; break; }
+            if (sec == SEC_TRIGGER) ps.have_trigger = 0;
+            ps.section = sec;
+            ps.patch_have = ps.trig_have = ps.wr_have = 0;
+            memset(&ps.patch, 0, sizeof ps.patch);
+            memset(&ps.trig,  0, sizeof ps.trig);
+            memset(&ps.wr,    0, sizeof ps.wr);
             continue;
         }
 
@@ -177,35 +300,55 @@ static int parse_mod(char *text)
         char *key = trim(s);
         char *val = trim(eq + 1);
 
-        if (in_patch) {
-            if (strcmp(key, "address") == 0) {
-                ok = parse_u32(val, &cur.address);  have |= 1u;
-            } else if (strcmp(key, "expected") == 0) {
-                ok = parse_u32(val, &cur.expected); have |= 2u;
-            } else if (strcmp(key, "replace") == 0) {
-                ok = parse_u32(val, &cur.replace);  have |= 4u;
-            } else if (strcmp(key, "note") == 0) {
+        switch (ps.section) {
+        case SEC_PATCH:
+            if      (!strcmp(key, "address"))  { ok = parse_u32(val, &ps.patch.address);  ps.patch_have |= 1u; }
+            else if (!strcmp(key, "expected")) { ok = parse_u32(val, &ps.patch.expected); ps.patch_have |= 2u; }
+            else if (!strcmp(key, "replace"))  { ok = parse_u32(val, &ps.patch.replace);  ps.patch_have |= 4u; }
+            else if (!strcmp(key, "note"))     { ok = is_quoted(val); }
+            else ok = 0;
+            break;
+        case SEC_TRIGGER:
+            if      (!strcmp(key, "modes"))   { ok = parse_mode_mask(val, &ps.trig.mode_mask); ps.trig_have |= 1u; }
+            else if (!strcmp(key, "buttons")) { ok = parse_u32(val, &ps.trig.buttons); ps.trig_have |= 2u; }
+            else if (!strcmp(key, "note"))    { ok = is_quoted(val); }
+            else ok = 0;
+            break;
+        case SEC_WRITE:
+            if      (!strcmp(key, "address")) { ok = parse_u32(val, &ps.wr.address); ps.wr_have |= 1u; }
+            else if (!strcmp(key, "value"))   { ok = parse_u32(val, &ps.wr.value);   ps.wr_have |= 4u; }
+            else if (!strcmp(key, "op")) {
+                char *op = unquote(val);
+                if      (op && !strcmp(op, "set")) ps.wr.op = HMBTN_OP_SET;
+                else if (op && !strcmp(op, "or"))  ps.wr.op = HMBTN_OP_OR;
+                else ok = 0;
+                ps.wr_have |= 2u;
+            }
+            else if (!strcmp(key, "note")) { ok = is_quoted(val); }
+            else ok = 0;
+            break;
+        default:
+            if (!strcmp(key, "name") || !strcmp(key, "version") ||
+                !strcmp(key, "author") || !strcmp(key, "description")) {
                 ok = is_quoted(val);
             } else {
                 ok = 0;
             }
-        } else {
-            if (strcmp(key, "name") == 0 || strcmp(key, "version") == 0 ||
-                strcmp(key, "author") == 0 || strcmp(key, "description") == 0) {
-                ok = is_quoted(val);
-            } else {
-                ok = 0;
-            }
+            break;
         }
     }
 
-    if (ok && in_patch) {
-        if (have != 7u || !patch_valid(&cur) ||
-            g_patch_count >= HMBTN_MAX_PATCHES) ok = 0;
-        else g_patches[g_patch_count++] = cur;
-    }
+    if (ok && !flush_section(&ps)) ok = 0;
 
-    if (!ok) g_patch_count = start;
+    /* A trigger that wrote nothing is a mistake, not a no-op. */
+    for (uint32_t i = t0; ok && i < g_trigger_count; i++)
+        if (g_triggers[i].write_count == 0) ok = 0;
+
+    if (!ok) {
+        g_patch_count   = p0;
+        g_trigger_count = t0;
+        g_write_count   = w0;
+    }
     return ok;
 }
 
@@ -259,13 +402,34 @@ static void scan_mods(void)
 
 static void on_activate(void)
 {
-    g_patch_count = 0;
+    g_patch_count = g_trigger_count = g_write_count = 0;
     scan_mods();
 }
 
-/* Apply every guarded patch whose bytes are currently resident. Overlays are
- * reloaded from disc by the game, which restores the stock word, so the
- * comparison against `expected` is what makes this re-apply correctly. */
+/* Held buttons of the first pad, or 0 when the pad pointer is not valid RAM. */
+static uint32_t held_buttons(void)
+{
+    uint32_t ptr = psx_mod_read_word(HMBTN_PAD_PTR_ADDR);
+    if ((ptr & 3u) != 0 || ptr < HMBTN_WRITE_LO ||
+        ptr + HMBTN_PAD_HELD_OFFS >= HMBTN_ADDR_HI) return 0;
+    return psx_mod_read_word(ptr + HMBTN_PAD_HELD_OFFS) & 0xFFFFu;
+}
+
+static void run_writes(const HmbtnTrigger *t)
+{
+    for (uint32_t i = 0; i < t->write_count; i++) {
+        const HmbtnWrite *w = &g_writes[t->first_write + i];
+        if (w->op == HMBTN_OP_OR)
+            psx_mod_write_word(w->address, psx_mod_read_word(w->address) | w->value);
+        else
+            psx_mod_write_word(w->address, w->value);
+    }
+}
+
+/* Apply every guarded patch whose bytes are currently resident, then run the
+ * triggers. Overlays are reloaded from disc by the game, which restores the
+ * stock word, so the comparison against `expected` is what makes the patches
+ * re-apply correctly. */
 static void on_vblank(void)
 {
     for (uint32_t i = 0; i < g_patch_count; i++) {
@@ -273,6 +437,21 @@ static void on_vblank(void)
         if (psx_mod_read_word(p->address) == p->expected) {
             psx_mod_write_code_word(p->address, p->replace);
             psx_mod_counter_add("hmbtn.patchengine.applied", 1);
+        }
+    }
+
+    if (g_trigger_count == 0) return;
+    const uint32_t held = held_buttons();
+    const uint32_t mode = psx_mod_read_word(HMBTN_MODE_ADDR);
+    for (uint32_t i = 0; i < g_trigger_count; i++) {
+        HmbtnTrigger *t = &g_triggers[i];
+        const int down = (held & t->buttons) == t->buttons;
+        if (down && t->armed && mode < 32u && ((t->mode_mask >> mode) & 1u)) {
+            run_writes(t);
+            t->armed = 0;
+            psx_mod_counter_add("hmbtn.patchengine.triggered", 1);
+        } else if (!down) {
+            t->armed = 1;
         }
     }
 }
