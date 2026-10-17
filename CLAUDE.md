@@ -293,6 +293,20 @@ itself with plain file I/O.
   `save-anywhere` requires both; verified in the running game: refused in the Start
   menu, refused during the event, fires when free. Mode 14 is still not guarded,
   so do not press the combo on the "Now Loading" screen.
+- **Dialogue speed, work in progress (nothing patched yet).** Measured while the
+  outdoor policeman event printed text: `0x80122F88` is the **game's global frame
+  tick**, `+1` per game frame, written by one store at `0x800C30D4` inside the
+  per-frame updater `0x800C30AC` (event_s), which also walks a **37-entry object
+  array of 468 bytes each at `0x80076220`** (text boxes and windows are objects in
+  it; calls `0x800C2F74` per object). Several other words step `+2` per 0.2 s
+  (`0x8006C840`, `0x80075A10`, `0x80076010`, `0x800760C4`, `0x80076178`): frame
+  timers, not the character index. The **character index/pointer was not found**
+  by RAM-snapshot diffing (6 snapshots, 0.2 s apart, 8/16/32-bit counters), so it
+  advances in irregular steps or lives elsewhere. Text is ~6 characters/second.
+  Next: trace writes to the text object's fields during printing (`wtrace_add`
+  works; the dump command is `wtrace_dump` with `addr_lo`/`addr_hi`), or disassemble
+  `0x800C2F74`; and test whether holding a button already speeds the text up, on a
+  scene that stays on one text box (the policeman event moves on by itself).
 - Debugging a trigger: **check the state before pressing the combo.** A fired
   trigger changes the game to the card screen and every later RAM read is then
   invalid; one wrong "free" reading came from exactly that.
