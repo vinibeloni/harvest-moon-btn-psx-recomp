@@ -233,7 +233,11 @@ or save, code generated from the game's executable (`generated/`, `cache/`,
 
 A mod is a folder under `<exe dir>/mods/hmbtn/` holding one `mod.toml`. Put it
 there and it is active; remove it and it is gone — no rebuild, regen or overlay
-recompile. There is no in-game toggle and no hotkey (a hotkey is only ever the
+recompile. The engine looks one level deeper too, so unzipping a release into a
+folder named after the mod (`mods/hmbtn/<mod>/<mod>/mod.toml`) works as well as
+extracting it into `mods/hmbtn/`. Verified: both layouts load exactly once. (Before
+this, the nested layout was ignored with no counter at all.) Mods are distributed as
+one zip per release from the separate mods repository; see its README. There is no in-game toggle and no hotkey (a hotkey is only ever the
 trigger of a feature, e.g. a save shortcut).
 
 ```toml

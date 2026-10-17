@@ -399,19 +399,54 @@ static int parse_mod(char *text)
     return ok;
 }
 
-static void load_mod(const char *mods_dir, const char *name)
+/* Load <dir>/mod.toml. Returns 1 when the folder is a mod (loaded or rejected),
+ * 0 when it has no mod.toml and so may only be a container for one. */
+static int load_mod(const char *dir)
 {
     char path[HMBTN_PATH_CAP];
-    if ((size_t)snprintf(path, sizeof path, "%s/%s/mod.toml", mods_dir, name)
-            >= sizeof path) {
+    if ((size_t)snprintf(path, sizeof path, "%s/mod.toml", dir) >= sizeof path) {
         psx_mod_counter_add("hmbtn.patchengine.mods_rejected", 1);
-        return;
+        return 1;
     }
     char *text = read_file(path);
-    if (!text) return;      /* a folder without mod.toml is not a mod */
+    if (!text) return 0;
     if (parse_mod(text)) psx_mod_counter_add("hmbtn.patchengine.mods_loaded", 1);
     else                 psx_mod_counter_add("hmbtn.patchengine.mods_rejected", 1);
     free(text);
+    return 1;
+}
+
+/* Visit each sub-folder of `dir`. One that holds a mod.toml is a mod; one that
+ * does not is searched one level further, because unzipping a release into a
+ * folder named after the mod gives mods/hmbtn/<mod>/<mod>/mod.toml, and a mod
+ * silently ignored is worse than one found a level down. */
+static void scan_dir(const char *dir, int depth)
+{
+    char sub[HMBTN_PATH_CAP];
+#ifdef _WIN32
+    char pattern[HMBTN_PATH_CAP];
+    if ((size_t)snprintf(pattern, sizeof pattern, "%s/*", dir) >= sizeof pattern) return;
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (fd.cFileName[0] == '.') continue;
+        if ((size_t)snprintf(sub, sizeof sub, "%s/%s", dir, fd.cFileName) >= sizeof sub) continue;
+        if (!load_mod(sub) && depth > 0) scan_dir(sub, depth - 1);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if ((size_t)snprintf(sub, sizeof sub, "%s/%s", dir, e->d_name) >= sizeof sub) continue;
+        if (!load_mod(sub) && depth > 0) scan_dir(sub, depth - 1);
+    }
+    closedir(d);
+#endif
 }
 
 static void scan_mods(void)
@@ -421,30 +456,7 @@ static void scan_mods(void)
     if (!exe_dir(base, sizeof base)) return;
     if ((size_t)snprintf(mods_dir, sizeof mods_dir, "%s/mods/hmbtn", base)
             >= sizeof mods_dir) return;
-
-#ifdef _WIN32
-    char pattern[HMBTN_PATH_CAP];
-    if ((size_t)snprintf(pattern, sizeof pattern, "%s/*", mods_dir)
-            >= sizeof pattern) return;
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-        if (fd.cFileName[0] == '.') continue;
-        load_mod(mods_dir, fd.cFileName);
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-#else
-    DIR *d = opendir(mods_dir);
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        load_mod(mods_dir, e->d_name);
-    }
-    closedir(d);
-#endif
+    scan_dir(mods_dir, 1);
 }
 
 static void on_activate(void)
