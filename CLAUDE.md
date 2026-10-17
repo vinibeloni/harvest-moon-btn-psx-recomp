@@ -207,6 +207,44 @@ sh tools/save_cache.sh
 `cache/` (root) is durable; `build/cache` is what the runtime reads.
 `build.sh` copies in, `save_cache.sh` copies out.
 
+### Drop-in mods (`mods/hmbtn/<name>/mod.toml`)
+
+A mod is a folder under `<exe dir>/mods/hmbtn/` holding one `mod.toml`. Put it
+there and it is active; remove it and it is gone — no rebuild, regen or overlay
+recompile. There is no in-game toggle and no hotkey (a hotkey is only ever the
+trigger of a feature, e.g. a save shortcut).
+
+```toml
+name = "Example"                  # name / version / author / description (strings)
+
+[[patch]]
+address  = 0x800FFD2C             # KSEG0 RAM 0x80010000..0x801FFFFF, word aligned
+expected = 0x24020001             # stock word; the patch applies only while RAM holds it
+replace  = 0x24020002
+note     = "why"
+```
+
+The engine is `src/mods/hmbtn_patchengine.c`, activated by the package
+`mods/preloaded/packages/hmbtn.patchengine` (wired in `CMakeLists.txt` through
+`PRELOADED_MODS_DIR` and `EXTRAS_SOURCES`). Why a data engine and not one
+package per mod: the framework cannot load native code from a loose mod, a
+declarative `[[patch]]` reaches only the main EXE, and **two features claiming
+the same plugin id fail plan resolution** — so the one engine scans the folder
+itself with plain file I/O.
+
+- Every patch is guarded. The engine re-checks each one every VBlank, so a patch
+  inside an overlay is re-applied whenever the game reloads that overlay and
+  restores the stock word. A mod that fails to parse is rejected whole.
+- Observe it with `debug_client.py mod_counters`: `hmbtn.patchengine.mods_loaded`,
+  `.mods_rejected`, `.applied`. Nothing is logged.
+- Verified (Windows build): a valid mod loaded, a mod with an unaligned address
+  was rejected, and the patched word read back in RAM. **Not yet verified:**
+  patches inside overlay windows (`0x800B7E20`, `0x8012DDE8`) with the native
+  shards, and any change in frame rate from `psx_mod_write_code_word` on overlay
+  pages.
+- `build/mods/hmbtn/` is not created by the build; create it, or copy the folder
+  next to the executable when packaging.
+
 ### Debug server
 
 `python3 psxrecomp/tools/debug_client.py <cmd>` on port 4370. Useful:

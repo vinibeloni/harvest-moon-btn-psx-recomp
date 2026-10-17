@@ -1,0 +1,22 @@
+format_version = 5
+id = "hmbtn.patchengine"
+version = "1.0.0"
+name = "HM BTN Patch Engine"
+author = "HarvestMoonBTNRecomp"
+description = "Loads drop-in data mods from mods/hmbtn/<name>/mod.toml and applies their guarded patches, including inside the game's overlays."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-01115"
+
+[[feature]]
+id = "engine"
+name = "Drop-in mods"
+description = "Applies every mod found under mods/hmbtn/. With no mod folder present the game runs exactly as stock."
+group = "Quality of Life"
+default_enabled = true
+
+[[plugin]]
+feature = "engine"
+id = "hmbtn.patchengine"
