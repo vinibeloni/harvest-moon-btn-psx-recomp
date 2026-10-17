@@ -19,6 +19,11 @@
  *     buttons = 0x010C                  # all of these pad bits held (Select|L1|R1)
  *     note    = "why"
  *
+ *     [[require]]                       # belongs to the [[trigger]] above it;
+ *     address = 0x80127208              # every one must hold or the press is refused
+ *     mask    = 0xFFFFFFFF              # optional, default all bits
+ *     equals  = 1                       # (word & mask) == equals
+ *
  *     [[write]]                         # belongs to the [[trigger]] above it
  *     address = 0x8006C878
  *     op      = "or"                    # "set" or "or"
@@ -59,6 +64,7 @@
 #define HMBTN_MAX_PATCHES  8192u
 #define HMBTN_MAX_TRIGGERS 64u
 #define HMBTN_MAX_WRITES   512u
+#define HMBTN_MAX_REQUIRES 512u
 #define HMBTN_MAX_FILE     (1u << 20)
 #define HMBTN_PATH_CAP     1024u
 
@@ -91,11 +97,20 @@ typedef struct HmbtnWrite {
     uint32_t op;
 } HmbtnWrite;
 
+/* A condition on one RAM word: (word & mask) == equals. */
+typedef struct HmbtnRequire {
+    uint32_t address;
+    uint32_t mask;
+    uint32_t equals;
+} HmbtnRequire;
+
 typedef struct HmbtnTrigger {
     uint32_t mode_mask;     /* bit n set = the trigger may fire in game mode n */
     uint32_t buttons;
     uint32_t first_write;
     uint32_t write_count;
+    uint32_t first_require;
+    uint32_t require_count;
     int      armed;
 } HmbtnTrigger;
 
@@ -105,6 +120,8 @@ static HmbtnTrigger g_triggers[HMBTN_MAX_TRIGGERS];
 static uint32_t     g_trigger_count;
 static HmbtnWrite   g_writes[HMBTN_MAX_WRITES];
 static uint32_t     g_write_count;
+static HmbtnRequire g_requires[HMBTN_MAX_REQUIRES];
+static uint32_t     g_require_count;
 
 static int exe_dir(char *out, size_t cap)
 {
@@ -210,13 +227,17 @@ static int patch_valid(const HmbtnPatch *p)
            p->expected != p->replace;
 }
 
-static int write_valid(const HmbtnWrite *w)
+static int write_valid_addr(uint32_t a)
 {
-    return (w->address & 3u) == 0 &&
-           w->address >= HMBTN_WRITE_LO && w->address < HMBTN_ADDR_HI;
+    return (a & 3u) == 0 && a >= HMBTN_WRITE_LO && a < HMBTN_ADDR_HI;
 }
 
-enum { SEC_TOP = 0, SEC_PATCH, SEC_TRIGGER, SEC_WRITE };
+static int write_valid(const HmbtnWrite *w)
+{
+    return write_valid_addr(w->address);
+}
+
+enum { SEC_TOP = 0, SEC_PATCH, SEC_TRIGGER, SEC_WRITE, SEC_REQUIRE };
 
 typedef struct ParseState {
     int          section;
@@ -226,7 +247,9 @@ typedef struct ParseState {
     unsigned     trig_have;       /* bit 0 mode, 1 buttons */
     HmbtnWrite   wr;
     unsigned     wr_have;         /* bit 0 address, 1 op, 2 value */
-    int          have_trigger;    /* a [[trigger]] is open for [[write]] */
+    HmbtnRequire rq;
+    unsigned     rq_have;         /* bit 0 address, 1 equals (mask is optional) */
+    int          have_trigger;    /* a [[trigger]] is open for [[write]]/[[require]] */
 } ParseState;
 
 /* Close whichever table is open, committing it to the global arrays. */
@@ -244,9 +267,17 @@ static int flush_section(ParseState *ps)
             g_trigger_count >= HMBTN_MAX_TRIGGERS) return 0;
         ps->trig.first_write = g_write_count;
         ps->trig.write_count = 0;
+        ps->trig.first_require = g_require_count;
+        ps->trig.require_count = 0;
         ps->trig.armed = 0;
         g_triggers[g_trigger_count++] = ps->trig;
         ps->have_trigger = 1;
+        break;
+    case SEC_REQUIRE:
+        if (!ps->have_trigger || ps->rq_have != 3u || !write_valid_addr(ps->rq.address) ||
+            g_require_count >= HMBTN_MAX_REQUIRES) return 0;
+        g_requires[g_require_count++] = ps->rq;
+        g_triggers[g_trigger_count - 1].require_count++;
         break;
     case SEC_WRITE:
         if (!ps->have_trigger || ps->wr_have != 7u || !write_valid(&ps->wr) ||
@@ -263,7 +294,8 @@ static int flush_section(ParseState *ps)
 /* Parse one mod.toml. Returns 1 and keeps its entries, or 0 and keeps none. */
 static int parse_mod(char *text)
 {
-    const uint32_t p0 = g_patch_count, t0 = g_trigger_count, w0 = g_write_count;
+    const uint32_t p0 = g_patch_count, t0 = g_trigger_count, w0 = g_write_count,
+                   r0 = g_require_count;
     ParseState ps;
     int ok = 1;
 
@@ -283,14 +315,17 @@ static int parse_mod(char *text)
             if      (strcmp(s, "[[patch]]")   == 0) sec = SEC_PATCH;
             else if (strcmp(s, "[[trigger]]") == 0) sec = SEC_TRIGGER;
             else if (strcmp(s, "[[write]]")   == 0) sec = SEC_WRITE;
+            else if (strcmp(s, "[[require]]") == 0) sec = SEC_REQUIRE;
             else { ok = 0; break; }
             if (!flush_section(&ps)) { ok = 0; break; }
             if (sec == SEC_TRIGGER) ps.have_trigger = 0;
             ps.section = sec;
-            ps.patch_have = ps.trig_have = ps.wr_have = 0;
+            ps.patch_have = ps.trig_have = ps.wr_have = ps.rq_have = 0;
             memset(&ps.patch, 0, sizeof ps.patch);
             memset(&ps.trig,  0, sizeof ps.trig);
             memset(&ps.wr,    0, sizeof ps.wr);
+            memset(&ps.rq,    0, sizeof ps.rq);
+            ps.rq.mask = 0xFFFFFFFFu;
             continue;
         }
 
@@ -327,6 +362,13 @@ static int parse_mod(char *text)
             else if (!strcmp(key, "note")) { ok = is_quoted(val); }
             else ok = 0;
             break;
+        case SEC_REQUIRE:
+            if      (!strcmp(key, "address")) { ok = parse_u32(val, &ps.rq.address); ps.rq_have |= 1u; }
+            else if (!strcmp(key, "equals"))  { ok = parse_u32(val, &ps.rq.equals);  ps.rq_have |= 2u; }
+            else if (!strcmp(key, "mask"))    { ok = parse_u32(val, &ps.rq.mask); }
+            else if (!strcmp(key, "note"))    { ok = is_quoted(val); }
+            else ok = 0;
+            break;
         default:
             if (!strcmp(key, "name") || !strcmp(key, "version") ||
                 !strcmp(key, "author") || !strcmp(key, "description")) {
@@ -348,6 +390,7 @@ static int parse_mod(char *text)
         g_patch_count   = p0;
         g_trigger_count = t0;
         g_write_count   = w0;
+        g_require_count = r0;
     }
     return ok;
 }
@@ -402,7 +445,7 @@ static void scan_mods(void)
 
 static void on_activate(void)
 {
-    g_patch_count = g_trigger_count = g_write_count = 0;
+    g_patch_count = g_trigger_count = g_write_count = g_require_count = 0;
     scan_mods();
 }
 
@@ -413,6 +456,16 @@ static uint32_t held_buttons(void)
     if ((ptr & 3u) != 0 || ptr < HMBTN_WRITE_LO ||
         ptr + HMBTN_PAD_HELD_OFFS >= HMBTN_ADDR_HI) return 0;
     return psx_mod_read_word(ptr + HMBTN_PAD_HELD_OFFS) & 0xFFFFu;
+}
+
+/* Every [[require]] of the trigger must hold: (word & mask) == equals. */
+static int requires_hold(const HmbtnTrigger *t)
+{
+    for (uint32_t i = 0; i < t->require_count; i++) {
+        const HmbtnRequire *r = &g_requires[t->first_require + i];
+        if ((psx_mod_read_word(r->address) & r->mask) != r->equals) return 0;
+    }
+    return 1;
 }
 
 static void run_writes(const HmbtnTrigger *t)
@@ -446,10 +499,17 @@ static void on_vblank(void)
     for (uint32_t i = 0; i < g_trigger_count; i++) {
         HmbtnTrigger *t = &g_triggers[i];
         const int down = (held & t->buttons) == t->buttons;
-        if (down && t->armed && mode < 32u && ((t->mode_mask >> mode) & 1u)) {
-            run_writes(t);
+        if (down && t->armed) {
+            /* One decision per press: a press refused by the mode or a
+             * condition is spent, so holding it until the condition clears
+             * does not fire later. */
             t->armed = 0;
-            psx_mod_counter_add("hmbtn.patchengine.triggered", 1);
+            if (mode < 32u && ((t->mode_mask >> mode) & 1u) && requires_hold(t)) {
+                run_writes(t);
+                psx_mod_counter_add("hmbtn.patchengine.triggered", 1);
+            } else {
+                psx_mod_counter_add("hmbtn.patchengine.blocked", 1);
+            }
         } else if (!down) {
             t->armed = 1;
         }

@@ -227,6 +227,11 @@ note     = "why"
 modes   = [2, 15, 19]             # only while the game's mode word (0x8005E39C) is one of these
 buttons = 0x010C                  # all of these bits of the game's pad word held (Select|L1|R1)
 
+[[require]]                       # belongs to the [[trigger]] above it; every one must hold
+address = 0x80127208              # or the press is refused (and spent: it does not fire later)
+mask    = 0xFFFFFFFF              # optional, default all bits
+equals  = 1                       # (word & mask) == equals
+
 [[write]]                         # belongs to the [[trigger]] above it
 address = 0x8005E39C              # KSEG0 RAM 0x80000000..0x801FFFFF, word aligned
 op      = "set"                   # "set" or "or"
@@ -275,6 +280,19 @@ itself with plain file I/O.
   is not** — the game always reloads inside the farmhouse. A save made while an
   event was running reloaded into that event's dialogue. Nothing in the mod
   checks for a dialogue or cutscene. Not tested: a save made late in the day.
+- **Event / dialogue guard (measured, do not re-derive):** `0x80127208` is `0`
+  for every moment of the outdoor policeman event (text boxes and camera pans) and
+  `1` whenever the player is free, including in the Start menu. `0x800A072C` is
+  `0x18` while the player is free and `0` while the Start menu is open. Both were
+  read across a full event and a menu open/close cycle. Words found by comparing
+  2 MB RAM snapshots that looked promising but were not: `0x8005E884`/`8890`
+  (only changed because the game was on the card screen), `0x8005E43C` (flickers).
+  `save-anywhere` requires both; verified in the running game: refused in the Start
+  menu, refused during the event, fires when free. Mode 14 is still not guarded,
+  so do not press the combo on the "Now Loading" screen.
+- Debugging a trigger: **check the state before pressing the combo.** A fired
+  trigger changes the game to the card screen and every later RAM read is then
+  invalid; one wrong "free" reading came from exactly that.
 - Select is also the game's MAP button, so the Select + L1 + R1 combo opens the
   map when the game returns from the save screen. Consider a combo without Select.
 - The game's own clock does not advance in the farmhouse; it ran outdoors

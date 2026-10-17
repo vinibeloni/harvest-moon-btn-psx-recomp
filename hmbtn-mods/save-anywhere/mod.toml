@@ -1,5 +1,5 @@
 name = "Save anywhere"
-version = "0.2.0"
+version = "0.3.0"
 description = "Hold Select + L1 + R1 in the field to open the diary save screen without going to bed."
 
 # Does what SaveGate (0x800DE4C0) does at its end, SetMode(7), by writing the
@@ -13,12 +13,27 @@ description = "Hold Select + L1 + R1 in the field to open the diary save screen 
 # 20. Which one the game is in depends on how it got there, not on where the
 # player stands: 19 after loading a diary one way, 14 another, 15 after the card
 # screen. All three were seen with the player free in the farmhouse. Mode 14 also
-# covers the "Now Loading" screen, so do not press it while the game is loading,
-# nor during a dialogue or a cutscene: nothing here checks for either.
+# covers the "Now Loading" screen, so do not press it while the game is loading:
+# nothing here checks for that.
 [[trigger]]
 modes   = [2, 6, 14, 15, 19, 20]
 buttons = 0x010C
 note    = "Select + L1 + R1"
+
+# Refuse the press during a dialogue or a cutscene, and while the Start menu is
+# open. Found by comparing RAM snapshots, then each word was read across a full
+# event and a menu open/close cycle in the running game (see CLAUDE.md):
+#   0x80127208 is 0 for every moment of the outdoor event, 1 whenever the player is free
+#   0x800A072C is 0x18 while the player is free, 0 while the Start menu is open
+[[require]]
+address = 0x80127208
+equals  = 1
+note    = "no dialogue or event running"
+
+[[require]]
+address = 0x800A072C
+equals  = 0x18
+note    = "Start menu is not open"
 
 [[write]]
 address = 0x8005E3A0
