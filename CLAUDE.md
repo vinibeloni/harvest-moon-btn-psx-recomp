@@ -207,6 +207,170 @@ sh tools/save_cache.sh
 `cache/` (root) is durable; `build/cache` is what the runtime reads.
 `build.sh` copies in, `save_cache.sh` copies out.
 
+### Running the build on another Windows PC
+
+`.\tools\make_portable.ps1 [-IncludeDisc] [-IncludeSave] [-IncludeMods] [-Zip]`
+(run after `sh build.sh` and `sh tools/compile_static_overlays.sh`) writes a flat
+folder with the executable, `game.toml`, `bios\`, `cache\`, `mods\bundled`,
+`input.ini`, `keybinds.ini`, the three VC++ runtime DLLs beside the exe (so the
+other PC needs no installer), a `Play.bat` and a `README.txt`. Default output
+`dist\HarvestMoonBTN-portable` (gitignored).
+
+- **Verified:** the folder, run from a directory far from the repo with nothing
+  of the build tree around it, found the disc and the overlay cache (`cache_dir`
+  inside it), reached the title in 15 s, loaded a diary, and ran 99.4 % native
+  dispatch. An A/B against `build\` gave identical numbers (9.7 game fps, 19.4
+  vsync Hz right after loading the farmhouse, on a busy machine), so the package
+  is not the cause of any slowness. **Not verified:** a genuinely different PC
+  (a clean Windows without the VC++ runtime, other GPU).
+- The runtime reads the game executable from the disc: `SLUS_011.15` and
+  `SLUS_011.15.text.bin` (Ghidra leftovers) are NOT needed and are never copied.
+- `-IncludeDisc` copies the disc (`.cue` + `.bin`); the result is YOUR copy of the
+  game, for your own computers. Never upload it. Without the switch, copy the
+  disc next to the exe on the other PC. `game.toml` names it
+  `Harvest Moon - Back to Nature (USA).cue` and resolves it beside itself.
+- The memory card is `card1.mcd` beside the exe. The game rewrites a few bytes of
+  its header (`MC` marker) every time it starts, so a byte-for-byte comparison of
+  a card before and after a launch always differs by about 5 bytes; it is not a
+  lost save.
+
+### No game data in this repository
+
+This repo ships **code and addresses only**. It must never contain the disc image,
+`SLUS_011.15`, anything extracted from `A_FILE.BIN`, a retail BIOS, a memory card
+or save, code generated from the game's executable (`generated/`, `cache/`,
+`build/`, `overlay_static.json`), or a dump of its RAM (`psx_freeze_*.json`,
+`overlay_captures*`). The user supplies the disc; everything above is gitignored.
+
+- `tools/check_no_game_data.py` fails on: disc/ROM/save/executable extensions,
+  game or BIOS file names, files in generated/derived directories, anything over
+  1 MiB, binary content, and long hex or base64 runs. Run it on every tracked file
+  (`python3 tools/check_no_game_data.py`) or on what is staged (`--staged`).
+- Turn on the commit gate once per clone: `git config core.hooksPath .githooks`.
+  The hook fails closed: with no working Python the commit is refused.
+- Audited 2026-10-17 (all refs, whole history of this repo): 35 tracked files, all
+  text or scripts, largest 42 KB; no blob over 300 KB ever; `seeds/` hold function
+  addresses only. The `psxrecomp/` submodule is upstream's and is a separate
+  repository: it bundles `bios/openbios.bin`, the PCSX-Redux **OpenBIOS** (MIT,
+  documented in `bios/OpenBIOS.LICENSE`; not a Sony dump), and tool executables
+  (tcc, a Python runtime), none of them game data. Its memory card fixtures contain
+  no game ids. Do not add a retail BIOS (`SCPH*.BIN`) there or here.
+
+### Drop-in mods (`mods/hmbtn/<name>/mod.toml`)
+
+A mod is a folder under `<exe dir>/mods/hmbtn/` holding one `mod.toml`. Put it
+there and it is active; remove it and it is gone — no rebuild, regen or overlay
+recompile. The engine looks one level deeper too, so unzipping a release into a
+folder named after the mod (`mods/hmbtn/<mod>/<mod>/mod.toml`) works as well as
+extracting it into `mods/hmbtn/`. Verified: both layouts load exactly once. (Before
+this, the nested layout was ignored with no counter at all.) Mods are distributed as
+one zip per release from the separate mods repository; see its README. There is no in-game toggle and no hotkey (a hotkey is only ever the
+trigger of a feature, e.g. a save shortcut).
+
+```toml
+name = "Example"                  # name / version / author / description (strings)
+
+[[patch]]
+address  = 0x800FFD2C             # KSEG0 RAM 0x80010000..0x801FFFFF, word aligned
+expected = 0x24020001             # stock word; the patch applies only while RAM holds it
+replace  = 0x24020002
+note     = "why"
+
+[[trigger]]                       # a button combination, once per press
+modes   = [2, 15, 19]             # only while the game's mode word (0x8005E39C) is one of these
+buttons = 0x010C                  # all of these bits of the game's pad word held (Select|L1|R1)
+
+[[require]]                       # belongs to the [[trigger]] above it; every one must hold
+address = 0x80127208              # or the press is refused (and spent: it does not fire later)
+mask    = 0xFFFFFFFF              # optional, default all bits
+equals  = 1                       # (word & mask) == equals
+
+[[write]]                         # belongs to the [[trigger]] above it
+address = 0x8005E39C              # KSEG0 RAM 0x80000000..0x801FFFFF, word aligned
+op      = "set"                   # "set" or "or"
+value   = 7
+```
+
+Shipped mods live in `hmbtn-mods/<name>/` (copy one into `mods/hmbtn/` next to the
+executable). `save-anywhere` is the first: in the field, Select + L1 writes what
+`SetMode(7)` writes (diary save screen mid-day) and Select + R1 writes `SetMode(8)`
+(load screen). A trigger may `forbid = <pad bits>` that must NOT be held, so the
+two combos stay distinct when all three buttons are down. Aborting the save screen
+with ○ asks "Abort save?"; "Yes" returns to the field in mode 15 without writing.
+
+The engine is `src/mods/hmbtn_patchengine.c`, activated by the package
+`mods/preloaded/packages/hmbtn.patchengine` (wired in `CMakeLists.txt` through
+`PRELOADED_MODS_DIR` and `EXTRAS_SOURCES`). Why a data engine and not one
+package per mod: the framework cannot load native code from a loose mod, a
+declarative `[[patch]]` reaches only the main EXE, and **two features claiming
+the same plugin id fail plan resolution** — so the one engine scans the folder
+itself with plain file I/O.
+
+- Every patch is guarded. The engine re-checks each one every VBlank, so a patch
+  inside an overlay is re-applied whenever the game reloads that overlay and
+  restores the stock word. A mod that fails to parse is rejected whole.
+- Observe it with `debug_client.py mod_counters`: `hmbtn.patchengine.mods_loaded`,
+  `.mods_rejected`, `.applied`. Nothing is logged.
+- Verified (Windows build): a valid mod loaded, a mod with an unaligned address
+  was rejected, a `[[patch]]` read back in RAM, and the `save-anywhere` trigger
+  fires once per press and opens the memory card screen. **Not yet verified:**
+  `[[patch]]` inside overlay windows (`0x800B7E20`, `0x8012DDE8`) with the native
+  shards, and any change in frame rate from `psx_mod_write_code_word` on overlay
+  pages.
+- Measured in the running game (do not re-derive): the pad struct is at the
+  pointer in `0x8005E3A8`; word `+0` is an auto-repeat pulse, **`+4` is the held
+  buttons** (active high: Select `0x100`, Start `0x800`, L1 `0x4`, R1 `0x8`,
+  Up `0x1000`, Cross `0x40`), `+8` the newly-pressed edge. The debug server's
+  `press` / `set_input` take the raw SIO word, active LOW (`0xFFFF` = idle,
+  Select bit 0, Start bit 3, L1 bit 10, R1 bit 11, Cross bit 14).
+- The mode word is **not** "where the player is": it says which entry brought the
+  game to the field overlay. All of 14 (`0x0E`), 15 (`0x0F`) and 19 (`0x13`) were
+  seen with the player free in the farmhouse, and 15 also outdoors. Writing the
+  mode word to 7 (and `0x8005E3A0` to 0, as `SetMode` does) opens the card save
+  screen from any of them, a save completes, and the game returns in mode 15.
+  Writing it to 8 opens the load screen.
+- The earlier plan to request a save with flag 72 plus the latch `0x80128B5C` does
+  **not** work in modes 14/15/19: nothing consumes the latch there.
+- What a mid-day save keeps (measured: saved outdoors at 6:40 holding a weed,
+  reloaded): the **time of day (6:40) and the held item are kept**; the **position
+  is not** — the game always reloads inside the farmhouse. A save made while an
+  event was running reloaded into that event's dialogue. Nothing in the mod
+  checks for a dialogue or cutscene. Not tested: a save made late in the day.
+- **Event / dialogue guard (measured, do not re-derive):** `0x80127208` is `0`
+  for every moment of the outdoor policeman event (text boxes and camera pans) and
+  `1` whenever the player is free, including in the Start menu. `0x800A072C` is
+  `0x18` while the player is free and `0` while the Start menu is open. Both were
+  read across a full event and a menu open/close cycle. Words found by comparing
+  2 MB RAM snapshots that looked promising but were not: `0x8005E884`/`8890`
+  (only changed because the game was on the card screen), `0x8005E43C` (flickers).
+  `save-anywhere` requires both; verified in the running game: refused in the Start
+  menu, refused during the event, fires when free. Mode 14 is still not guarded,
+  so do not press the combo on the "Now Loading" screen.
+- **Dialogue speed, work in progress (nothing patched yet).** Measured while the
+  outdoor policeman event printed text: `0x80122F88` is the **game's global frame
+  tick**, `+1` per game frame, written by one store at `0x800C30D4` inside the
+  per-frame updater `0x800C30AC` (event_s), which also walks a **37-entry object
+  array of 468 bytes each at `0x80076220`** (text boxes and windows are objects in
+  it; calls `0x800C2F74` per object). Several other words step `+2` per 0.2 s
+  (`0x8006C840`, `0x80075A10`, `0x80076010`, `0x800760C4`, `0x80076178`): frame
+  timers, not the character index. The **character index/pointer was not found**
+  by RAM-snapshot diffing (6 snapshots, 0.2 s apart, 8/16/32-bit counters), so it
+  advances in irregular steps or lives elsewhere. Text is ~6 characters/second.
+  Next: trace writes to the text object's fields during printing (`wtrace_add`
+  works; the dump command is `wtrace_dump` with `addr_lo`/`addr_hi`), or disassemble
+  `0x800C2F74`; and test whether holding a button already speeds the text up, on a
+  scene that stays on one text box (the policeman event moves on by itself).
+- Debugging a trigger: **check the state before pressing the combo.** A fired
+  trigger changes the game to the card screen and every later RAM read is then
+  invalid; one wrong "free" reading came from exactly that.
+- Select is also the game's MAP button, so the Select + L1 + R1 combo opens the
+  map when the game returns from the save screen. Consider a combo without Select.
+- The game's own clock does not advance in the farmhouse; it ran outdoors
+  (6:00 -> 6:40 in about two minutes of walking).
+- Mode 14 can be a stable gameplay state and also covers the "Now Loading" screen.
+- `build/mods/hmbtn/` is not created by the build; create it, or copy the folder
+  next to the executable when packaging.
+
 ### Debug server
 
 `python3 psxrecomp/tools/debug_client.py <cmd>` on port 4370. Useful:

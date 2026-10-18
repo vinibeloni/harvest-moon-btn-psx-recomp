@@ -50,4 +50,8 @@ psxrecomp_add_runtime_target(psx-runtime
   GAME_OVERLAY_STATIC_C     "${GAME_OVERLAY_STATIC}"
   WINDOW_TITLE              "Harvest Moon: Back to Nature (Recompiled)"
   DEFAULT_GAME_CONFIG_PATH  "game.toml"
+  # The drop-in mod engine: a package that activates the plugin below, which
+  # then loads mods/hmbtn/<name>/mod.toml from beside the executable.
+  PRELOADED_MODS_DIR        "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded"
+  EXTRAS_SOURCES            "${CMAKE_CURRENT_SOURCE_DIR}/src/mods/hmbtn_patchengine.c"
 )
