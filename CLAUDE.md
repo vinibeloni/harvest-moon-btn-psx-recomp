@@ -207,6 +207,33 @@ sh tools/save_cache.sh
 `cache/` (root) is durable; `build/cache` is what the runtime reads.
 `build.sh` copies in, `save_cache.sh` copies out.
 
+### Running the build on another Windows PC
+
+`.\tools\make_portable.ps1 [-IncludeDisc] [-IncludeSave] [-IncludeMods] [-Zip]`
+(run after `sh build.sh` and `sh tools/compile_static_overlays.sh`) writes a flat
+folder with the executable, `game.toml`, `bios\`, `cache\`, `mods\bundled`,
+`input.ini`, `keybinds.ini`, the three VC++ runtime DLLs beside the exe (so the
+other PC needs no installer), a `Play.bat` and a `README.txt`. Default output
+`dist\HarvestMoonBTN-portable` (gitignored).
+
+- **Verified:** the folder, run from a directory far from the repo with nothing
+  of the build tree around it, found the disc and the overlay cache (`cache_dir`
+  inside it), reached the title in 15 s, loaded a diary, and ran 99.4 % native
+  dispatch. An A/B against `build\` gave identical numbers (9.7 game fps, 19.4
+  vsync Hz right after loading the farmhouse, on a busy machine), so the package
+  is not the cause of any slowness. **Not verified:** a genuinely different PC
+  (a clean Windows without the VC++ runtime, other GPU).
+- The runtime reads the game executable from the disc: `SLUS_011.15` and
+  `SLUS_011.15.text.bin` (Ghidra leftovers) are NOT needed and are never copied.
+- `-IncludeDisc` copies the disc (`.cue` + `.bin`); the result is YOUR copy of the
+  game, for your own computers. Never upload it. Without the switch, copy the
+  disc next to the exe on the other PC. `game.toml` names it
+  `Harvest Moon - Back to Nature (USA).cue` and resolves it beside itself.
+- The memory card is `card1.mcd` beside the exe. The game rewrites a few bytes of
+  its header (`MC` marker) every time it starts, so a byte-for-byte comparison of
+  a card before and after a launch always differs by about 5 bytes; it is not a
+  lost save.
+
 ### No game data in this repository
 
 This repo ships **code and addresses only**. It must never contain the disc image,
