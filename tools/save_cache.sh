@@ -18,4 +18,4 @@ fi
 mkdir -p "$ROOT/cache"
 cp -R "$ROOT/build/cache/." "$ROOT/cache/"
 
-echo "saved $(find "$ROOT/cache" -name '*.so' | wc -l | tr -d ' ') overlay shard(s) to cache/"
+echo "saved $(find "$ROOT/cache" \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) | wc -l | tr -d ' ') overlay shard(s) to cache/"
