@@ -246,3 +246,9 @@ Harvest Moon: Back to Nature is © Natsume / Victor Interactive Software. This
 repository ships no game code, assets, or disc data — only configuration,
 factual addresses, and build tooling. Use only a disc image you obtained
 legally, and do not redistribute anything generated from it.
+
+The files in this repository are under the
+[PolyForm Noncommercial License 1.0.0](LICENSE): you may use, modify and share them
+for noncommercial purposes, but not sell them or use them commercially. The
+`psxrecomp/` submodule is a separate repository with its own license (also PolyForm
+Noncommercial). This is an unofficial fan project, not affiliated with Natsume.
